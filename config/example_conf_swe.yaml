@@ -1,0 +1,158 @@
+### base config ###
+full_field: &FULL_FIELD
+  loss: 'l2'
+  lr: 3E-4
+  scheduler: 'ReduceLROnPlateau'
+  num_data_workers: 4
+  dt: 1 # how many timesteps ahead the model will predict
+  n_history: 0 #how many previous timesteps to consider
+  prediction_type: 'iterative'
+  prediction_length: 110 #applicable only if prediction_type == 'iterative'
+  n_initial_conditions: 1 #applicable only if prediction_type == 'iterative'
+  ics_type: "default"
+  save_raw_forecasts: !!bool True
+  save_channel: !!bool False
+  masked_acc: !!bool False
+  maskpath: None
+  perturb: !!bool False
+  add_grid: !!bool False
+  N_grid_channels: 0
+  gridtype: 'sinusoidal' #options 'sinusoidal' or 'linear'
+  roll: !!bool False
+  flip: !!bool False
+  max_epochs: 50
+  batch_size: 64
+
+  #afno hyperparams
+  img_size: [720, 1440]
+  num_blocks: 8
+  nettype: 'afno'
+  patch_size: 4
+  width: 56
+  modes: 32
+  #options default, residual
+  target: 'default' 
+  in_channels: [0,1]
+  out_channels: [0,1] #must be same as in_channels if prediction_type == 'iterative'
+  normalization: 'zscore' #options zscore or minmax
+  dfs_type: 'full' # Options full, lite, none
+  fourier_conv_type: 'meta' # options full, factored, lat_filter, meta, none (anything else goes to none)
+  activation_type: 'relu' # options glu, relu - but really if it's not glu its gelu
+  pos_embedding: 'meta' # options learned, meta, meta_per_res,  none 
+  grid_res: 'linear'
+  res_factor: 1
+  down_type: 'patch' # Options Fourier, FourierPatch, Patch
+  up_type: 'patch' # Options Fourier, FourierPatch, Patch, FourierConv
+  resample_type: 'fourierconv' # Options patch, fourierconv
+  orography: !!bool False
+  orography_path: None
+
+  log_to_screen: !!bool True
+  log_to_wandb: !!bool True
+  save_checkpoint: !!bool True
+
+  enable_nhwc: !!bool False
+  optimizer_type: 'FusedAdam'
+  crop_size_x: None
+  crop_size_y: None
+
+
+afno_backbone: &backbone
+  <<: *FULL_FIELD
+  log_to_wandb: !!bool True
+  lr: 2E-3
+  steps_per_day: 4
+  steps_per_year: 1460
+  fixed_step_norm: .5
+  batch_size: 4
+  max_epochs: 150
+  scheduler: 'CosineAnnealingLR'
+  in_channels: [0, 1 ,2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+  out_channels: [0, 1 ,2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+  v_channels: [1, 7, 10, 13]
+  u_channels: [0, 6, 9, 12]
+  full_res_channels: [5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]
+  half_res_channels: [0, 1, 2, 3, 4, 19]
+  orography: !!bool False
+  orography_path: None 
+  two_step_training: !!bool False
+  pretrained: !!bool False
+  weight_decay: 1e-3
+  init_rollout_length: 3
+  valid_rollout_length: 1
+  long_valid_rollout_length: 100
+  long_valid_rollout_interval: 10 # Do long rollout every # epochs
+  max_grad_steps: 3
+  rollout_milestones: [] #[1] #[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+  scale_factor: 1
+  rescale_factor: 1
+  warmup_steps: 1
+  warmup_start: .1
+
+afno_swe: &swe
+  <<: *backbone
+  prediction_length: 300
+  img_size: [128, 256]
+  lr: 1e-3
+  weight_decay: 1e-7
+  fixed_step_norm: .5
+  res_factor: 1.1
+  batch_size: 64
+  max_epochs: 40
+  scheduler: 'CosineAnnealingLR'
+  in_channels: [0, 1 ,2]
+  out_channels: [0, 1 ,2]
+  v_channels: [1]
+  u_channels: [0]
+  exp_dir: 'results/swe'
+  train_data_path: 'data/swe/train'
+  valid_data_path: 'data/swe/test'
+  inf_data_path: 'data/swe/out_of_sample'
+  min_path:        'data/swe/mins.npy'
+  max_path:        'data/swe/maxs.npy'
+  time_means_path:   'data/swe/time_means.npy'
+  global_means_path: 'data/swe/global_means.npy'
+  global_stds_path:  'data/swe/global_stds.npy'
+  dc_path: 'data/swe/dc.h5'
+  steps_per_day: 24
+  steps_per_year: 1008
+  samples_per_year: 1008
+  max_grad_steps: 1
+  init_rollout_length: 1
+  diffusion_offset: 0
+  nettype: 'fno' # afno, fno, conv - eventually - comps branch: deepsphere, s2cnn
+  # FNO specific 
+  mode_cut: 0
+  embed_cut: 64
+  fc_cut: 2
+  layers: [64, 64, 64, 64, 64]
+  modes1: [64, 64, 64, 64]
+  modes2: [128, 128, 128, 128]
+  fc_dim: 128
+  conv_type: 'depth_separable' # fno, depth_separable, ds_interp
+  conv_interp_type: 'bicubic' # fourier, bicubic, bilinear (technically anything in F.interpolate)
+  fno_emb: True
+  taper_poles: False
+  fno_residual: True
+  spectral_norm: True
+  dfs_type: 'full' # Options full, lite, sphere, none
+  unet_layer_channels: [64, 128, 256, 512]
+  unet_filter_sizes: [20, 16, 12, 8]
+  unet_layers_per_block: 3
+
+
+afno_backbone_orography: &backbone_orography 
+  <<: *backbone
+  orography: !!bool True
+  orography_path: '/pscratch/sd/s/shas1693/data/era5/static/orography.h5'
+
+afno_backbone_finetune: 
+  <<: *backbone
+  lr: 1E-4
+  batch_size: 4
+  log_to_wandb: !!bool True
+  max_epochs: 50
+  pretrained: !!bool True
+  two_step_training: !!bool False
+  pretrained_ckpt_path: 'best_ckpt.tar'
+
