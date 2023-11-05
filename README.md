@@ -1,16 +1,27 @@
-Code adapted from the paper "McCabe, M., Harrington, P., Subramanian, S., & Brown, J. (2023). Towards stability of autoregressive neural operators."
+Exploring Stable Autoregressive Neural Operators
 
-The paper can be found here: https://arxiv.org/abs/2306.10619
+This repository contains an implementation and experiments for training autoregressive neural operator models, with a focus on improving stability for long-term simulations.
 
-The corresponding code can be found here: https://anonymous.4open.science/r/stabilizing_neural_operators-5774/README.md
+The code is adapted from techniques presented in "Towards Stability of Autoregressive Neural Operators" by McCabe et al. (2023). The original paper can be found at https://arxiv.org/abs/2306.10619 and the reference code is available at https://anonymous.4open.science/r/stabilizing_neural_operators-5774/.
 
-The goal of this repository is to explore the methods of solving partial differential equations using neural operators. In particular, neural operators typically use an input/output pair with a small time scale. While this method can be good for predicting a small set of states, we can use autoregression instead to produce a much longer simulation. Autoregression has been used in the most recently trending products, like ChatGPT which uses a transformer model. Some issues autoregression introduces in the neural operator space is a growing margin of error. As states diverge from the
-ground truth, this error grows. 
+Neural operators have shown promise for modeling spatiotemporal physical systems. However, when trained autoregressively to simulate over long time horizons, error accumulation can lead to instability. This work explores methods to mitigate exploding errors.
 
-The paper Towards Stability of Autoregressive Neural Operators references the use of Navier-Stokes fluid flow, rotating shallow water, and a high-resolution global weather forecasting system to demonstrate their findings. The design principles introduced led to 800% longer forecast without qualitative signs of divergence compared to original models.
+Key improvements include:
 
-Infinitely stable simulations using autoregressive neural operators has yet to be seen, this repository serves as an experiment to approach that goal.
+    Architectural changes to control instability-inducing operations
+    Application-specific optimizations tailored to physical systems
+    Experiments on fluid flow, weather forecasting, and other simulations
 
+The techniques presented in the paper enabled 800% longer stable forecasts on benchmark systems compared to baseline neural operator models.
 
+This repository provides implementations of the proposed methods. The goals are to:
 
+    Reproduce results on established test problems
+    Explore autoregressive neural operator architectures
+    Push towards even longer stable simulations
+    Investigate alternatives to improve stability
+
+The initial focus is on applying techniques to problems involving systems of partial differential equations and spatiotemporal data. Example systems include Navier-Stokes fluids, shallow water models, and global weather datasets.
+
+Feedback and contributions welcome! Please open an issue or pull request if you have ideas for enhancing stability or new applications to explore.
 
