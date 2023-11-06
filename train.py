@@ -36,6 +36,8 @@ from ruamel.yaml.comments import CommentedMap as ruamelDict
 import multiprocessing as mp
 from einops import rearrange
 
+# Maps indices 0-19 to the names of different variables in the ERA5
+# weather dataset. Human readable variable names
 era5_var_key_dict = {0: 'u10' \
               , 1: 'v10' \
               , 2: 't2m' \
@@ -57,10 +59,21 @@ era5_var_key_dict = {0: 'u10' \
               , 18: 'r850'\
               , 19: 'tcwv'}
 
+# Same concept
 swe_var_key_dict = {0: 'u',
         1: 'v',
         2: 'h'}
 
+# This implements gradient clipping, which is a technique used to 
+# stabilize training and avoid exploding gradients
+#
+# Calculates the total norm (magnitude) of the gradient, and clips it
+# (scales it down) if it exceeds a defined maximum value (max_norm).
+# Prevents outliers and overly large updates during training.
+#
+# Clipping the gradients to a max norm makes training more robust and can
+# improve convergence. The max_norm threshold is a hyperparameter that controls
+# how aggressively the clipping is applied.
 def grad_clip(grad):
     max_norm = 1 #TODO generalize this so we can alter the "trust region"
     total_norm  = torch.norm(grad)
@@ -71,6 +84,24 @@ class DoubleLoss(nn.Module):
     def forward(self, x):
         return x, x
 
+# This PyTorch module implements an aliasing level split as part of a 
+# frequency decompisition of the input data.
+# 
+# Takes input data x and computes the 2D Fourier Transform using
+# torch.fft.rfft2 This transforms the data into frequency space
+# Initializes an empty list to store the split results
+# Shifts the FFT data so low frequencies are in the center using
+# torch.fft.fftshift
+# Loops over 4 levels, from high to low frequency
+# For each level, extracts the frequency band by copying the appropriate
+# Region of the FFT data into a temp tensor res
+#
+# The frequency bands are centered around the nyquist frequency (1440/2)
+# and split into 4 levels of decreasing bandwifth
+#
+# Subtracts any existing outputs from res to avoid aliasing
+# Computes inverse FFT of res to go back to spatial domain
+# Stores the result for this level into the output list
 class AliasLevelSplit(nn.Module):
     def forward(self, x):
         x=  torch.fft.rfft2(x)
@@ -84,6 +115,29 @@ class AliasLevelSplit(nn.Module):
             outs.append(res)
         return tuple(torch.fft.irfft2(torch.fft.ifftshift(res, dim=2)) for res in outs)
 
+
+# Rebalancing the gradients during training to improve stability and
+# convergence.
+#
+# Takes in the model m, gradients with respect to the inputs (grad_inputs)
+# and gradients with respect to the outputs (grad_outputs)
+# 
+# It first normalizes the gradient for the first output (grad_outputs[0])
+# to have unit norm
+#
+# Then it loops through the remaining output gradients (grad_outputs[1:]) 
+# and processes each one:
+#   - Normalizes the gradient to have unit norm
+#   - Compputes the dot product (proj) between this gradient and the
+#   accumulated gradient output
+#   - If proj is negative, subtract the projection of out from the gradient
+#   to make them orthogonal
+#   - Accumulate the processed gradient into out
+#   - Renormalize out to keep its norm at 1
+# Scales the accumulated out by the original norm of grad_outputs[0] and
+# returns this as the sole gradient output
+#
+# Helps address vanishing/exploding gradients when training with multiple losses
 def rebalance_losses(m, grad_inputs, grad_outputs):
     grad_norm1 = torch.linalg.norm(grad_outputs[0])
     rescaled_gn1 = grad_outputs[0] / grad_norm1
@@ -98,6 +152,22 @@ def rebalance_losses(m, grad_inputs, grad_outputs):
         out /= torch.linalg.norm(out)
     return (grad_norm1*out,)
 
+# Inherits from nn.Module to represent a PyTorch module
+# In init, it creates an MSELoss module to calculate the raw MSE loss
+# It initializes two AliasLevelSplit modules - these are used to split
+# the input/output into multiple levels.
+# It registers rebalance_losses as a backward hook on the input splitter.
+# This will rebalance the gradients when doing backpropogation.
+# In the forward method:
+#   - Splits the input x into multiple levels using the input splitter
+#   - Also splits the target y into multiple levels using the output splitter
+#   - Calculates MSE loss between each level of x and y
+#   - Sums up and returns the total loss across all levels
+#
+# Main purpose is to improve training stability and convergence when dealing
+# with multi-scale outputs, by reweighting the gradient contributions from 
+# different levels to avoud vanishing/exploding gradients. The rebalancing helps
+# give equal importance to all levels rather than just the last output dominating
 class RescaledMSE(nn.Module):
     def __init__(self):
         super().__init__()
@@ -111,7 +181,24 @@ class RescaledMSE(nn.Module):
         return sum([self.loss(x, y) for x, y in zip(xs, ys)])
 
 
-
+# Rescales and orthogonalizes two gradient tensors during backpropogation
+# Takes as input the model m, input gradients, and output gradients
+# Normalizes each output gradient independently to unit norm
+# Computes the dot product between the normalized grad1 and grad2
+# Prints out proj along with the original gradient norms
+# If proj is negative, subtracts the projection of grad1 from grad2. 
+# This makes them orthogonal
+# Otherwise, leave grad2 as is.
+# Renormalizes grad2 to unit norm
+# Scales grad1 + grad2 by the original norm of grad1 and returns this as the
+# sole output gradient
+# 
+# This allows handling multiple loss terms during training while preventing
+# vanishing/exploding gradients. The orthogonality prevents redudant gradient
+# information. Scaling maintains the original magnitude.
+#
+# Leads to more stable and efficient training when dealing with multiple outputs
+# or losses.
 def scale_and_ortho(m, grad_inputs, grad_outputs):
     grad1, grad2 = grad_outputs
     #print('ginputs', [g.shape for g in grad_inputs])
@@ -130,12 +217,51 @@ def scale_and_ortho(m, grad_inputs, grad_outputs):
     #print('out', grad1_new.shape, grad2_new.shape)
     return (g1_norm*(grad1_new + grad2_new),)
 
+# Implements a spectral loss function that compares the Fourier transforms
+# of the predicted and target outputs. 
+# Takes the 2D Fourier tranform of the target y using PyTorch's rfft2,
+# with orthonormalization. This computes the complex-valued frequency components.
+# Similarly, it takes the rfft2 of the predicted output x.
+# Computes the element-wise squared difference between the Fourier
+# transforms yfft and xfft
+# Normalizes this by dividing by the squared magnitude of yfft, adding a small
+# constant (1e-10) for numerical stability
+# It takes the mean over all elements to compute the final spectral loss
+#
+# This spectral loss can help generate higher quality results with better
+# detail reproduction for certain tasks like super-resolution, denoising,
+# inpainting etc. where preserving spectral content is important.
+#
+# The orthonormalization in rfft2 makes the loss scale-inveriant with respect
+# to input sizes.
 class RSpectralLoss():
     def __call__(self, x, y):
         yfft = torch.fft.rfft2(y, norm='ortho')
         xfft = torch.fft.rfft2(x, norm='ortho')
         return ((yfft - xfft).abs()**2 / (yfft.abs()+1e-10)**2).mean()
         
+
+# Initializes the model, optimizer, loss functions, data loaders etc.
+# The train() method runs the main training loop over epochs. Each epoch
+# calls train_one_epoch() to train on the train set and validate_one_epoch()
+# to validate on the val set
+#
+# train_one_epoch() loops through the training data loader and performs the following
+# key steps:
+#   Forward passes the input through the model to get prediction
+#   Computes loss between prediction and target
+#   Backpropogates the loss and updates the model weights
+#   Logs training metrics like loss
+#
+# validate_one_epoch() loops through the validation data loader and performs:
+#   Forward pass through model to get predictions
+#   Compute validation loss and metrics like RMSE
+#   Log validation metrics
+#
+# save_checkpoint() and restore_checkpoint() to save and load model checkpoints
+# rebalance_losses() to rebalance gradients from mutltiple loss terms
+# add_weight decay() to add weight decay to optimizer
+# downsample_data() for data augmentation
 class Trainer():
   def count_parameters(self):
     return sum(p.numel() for p in self.model.parameters() if p.requires_grad)
