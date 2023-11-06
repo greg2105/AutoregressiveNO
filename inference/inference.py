@@ -29,7 +29,14 @@ import matplotlib.pyplot as plt
 import glob
 from datetime import datetime
 
-
+# Loads a pretrained model and prepares to run inference for weather forecasting
+# First defines a decorrelation time hyperparameter based on the forecast
+# field (fld). This will determine how often new perturbations are added
+# during the inference loop
+#
+# Different variables like z500 or temp have different decorrelation times
+# that determine how long an initial perturbation is valid for. Fast evolving
+# variales like wind need more frequent perturbations
 fld = "z500" # diff flds have diff decor times and hence differnt ics
 if fld == "z500" or fld == "2m_temperature" or fld == "t850":
     DECORRELATION_TIME = 36 # 9 days (36) for z500, 2 (8 steps) days for u10, v10
@@ -37,10 +44,23 @@ else:
     DECORRELATION_TIME = 8 # 9 days (36) for z500, 2 (8 steps) days for u10, v10
 idxes = {"u10":0, "z500":14, "2m_temperature":2, "v10":1, "t850":5}
 
+# The gaussian_perturb function adds Gassian noise to the input data for each
+# forecast timeframe. This simulates uncertainty in initial conditions
+#
+# Adding small random noise simulates uncertainty in initial conditions
+# and allows generating an ensemble of forecasts
 def gaussian_perturb(x, level=0.01, device=0):
     noise = level * torch.randn(x.shape).to(device, dtype=torch.float)
     return (x + noise)
 
+# The load_model function loads the model weights from a checkpoint file and sets
+# the model to eval mode
+#
+# The model is loaded from a pretrained checkpoint and set to eval mode for 
+# inference
+#
+# Some model specific layers like positional embeddings are removed when loading
+# the checkpoint
 def load_model(model, params, checkpoint_file):
     model.zero_grad()
     checkpoint_fname = checkpoint_file
@@ -60,9 +80,40 @@ def load_model(model, params, checkpoint_file):
     model.eval()
     return model
 
+# Downsamples the input tensor x by applying bilinear interpolation
+#
+# It takes as input:
+#   x - the input tensor to downsample
+#   scale - the downsampling factor (default is .125)
+#
+# Uses torch.nn.functional.interpolate to perform bilinear interpolation on x
+#
+# The scale_factor argument is set to scale to downsample by that factor
+#
+# mode = 'bilinear' applies bilinear interpolation for downsampling. This
+# takes a weighted average of the 4 nearest neighbors when converting to a lower
+# resolution.
+#
+# Returns the downsamples tensor.
+#
+# Useful for when you want to run inference on a higher resolution input
+# but the model is trained on lower resolution data. Bilinear interpolation
+# allows smoothly downsampling to the model's expected input resolution
 def downsample(x, scale=0.125):
     return torch.nn.functional.interpolate(x, scale_factor=scale, mode='bilinear')
 
+# Loads the necessary components for performing inference/prediciton with a 
+# pretrained model
+#
+# Gets the validation data loader and dataset. Provides access to the inference data
+# Gets the input and output image shapes from the dataset
+# Loads the pretrained model checkpoint
+# Initializes the model architecture and loads the checkpoint weights
+# Gets the input and output channels and total channel counts
+# Loads the global mean and std arrays for normalization
+# Loads the full inference data from a HDF5 file for the specified year
+# Moves the model to the requested device (GPU/CPU)
+# Returns the inference data and model ready for predicting
 def setup(params):
     device = torch.cuda.current_device() if torch.cuda.is_available() else 'cpu'
     #get data loader
@@ -112,6 +163,23 @@ def setup(params):
 
     return valid_data_full, model
 
+
+# Loads the model, data, normalization constants
+# Initializes tensors to store loss and accuracy over times
+# Extracts valid data for the given initial condition
+# Standardizes the data using loaded means/stds
+# Loads climatological mean if using daily climatology
+# Perturbs initial conditions if perturb flag is set
+# Autoregressive inference loop:
+#   Initialize with first n_history frames
+#   Iterate:
+#     Feeds previous prediction as input
+#     Makes prediction
+#     Calculates loss and accuracy vs ground truth
+#     Updates state for next iteration
+#   After loop:
+#     Returns sequences of predictions and ground truth
+#     Returns arrays of loss and accuracy over forecast steps
 def autoregressive_inference(params, ic, valid_data_full, model): 
     ic = int(ic) 
     #initialize global variables
